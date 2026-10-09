@@ -105,7 +105,7 @@ const DIAG = `${PREFIX}/diag`;
  * log unambiguously identifies which artifact produced a line — a stale
  * desktop process is otherwise indistinguishable from a silent failure.
  */
-export const BUILD = '2026-10-09T16:05+08:00';
+export const BUILD = '2026-10-10T01:10+08:00';
 
 export function diag(stage: string, detail?: unknown): void {
   try {
@@ -213,6 +213,14 @@ export interface InjectResponse {
   detail: string;
 }
 
+/** Result of the unattended auto-analysis path (`api/task-assist/auto`). */
+export interface AutoResponse {
+  ok: boolean;
+  detail: string;
+  injected: string[];
+  scanned: number;
+}
+
 /** Scan the host for skills/MCP tools matching `task` for `sessionId`. */
 export async function requestScan(task: string, sessionId?: string): Promise<ScanResponse> {
   const params = new URLSearchParams();
@@ -237,6 +245,86 @@ export async function requestInject(
   });
   if (!res.ok) throw new Error(`inject failed: ${res.status}`);
   return (await res.json()) as InjectResponse;
+}
+
+/**
+ * Announce "this text was just sent" and let the host scan + inject by itself.
+ *
+ * Unlike `requestInject`, this carries no selection: the host owns the decision
+ * (see `autoAssist`). It is called from the render path in response to a draft
+ * being cleared, so it must never throw into that path — failures resolve to a
+ * negative `AutoResponse` rather than rejecting.
+ */
+export async function requestAuto(task: string, sessionId?: string): Promise<AutoResponse> {
+  try {
+    const res = await hostFetch(`${PREFIX}/auto`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ task, session: sessionId }),
+    });
+    if (!res.ok) return { ok: false, detail: `auto failed: ${res.status}`, injected: [], scanned: 0 };
+    const data = (await res.json()) as Partial<AutoResponse>;
+    return {
+      ok: !!data.ok,
+      detail: typeof data.detail === 'string' ? data.detail : '',
+      injected: Array.isArray(data.injected) ? data.injected : [],
+      scanned: typeof data.scanned === 'number' ? data.scanned : 0,
+    };
+  } catch (e) {
+    return { ok: false, detail: (e as Error)?.message ?? String(e), injected: [], scanned: 0 };
+  }
+}
+
+/**
+ * Persisted "根据文本内容自动分析适配技能" toggle.
+ *
+ * It doubles as the panel checkbox and as the gate for the post-send auto path,
+ * so its value has to outlive the panel (which unmounts when closed) and the
+ * page (the shell reloads on plugin updates). localStorage is wrapped because
+ * it throws outright under a denied storage partition, and a settings read must
+ * never be the thing that takes the button down.
+ */
+const AUTO_KEY = 'dsh-task-assist:auto-analyze';
+
+export function readAutoEnabled(): boolean {
+  try {
+    return localStorage.getItem(AUTO_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function writeAutoEnabled(on: boolean): void {
+  try {
+    localStorage.setItem(AUTO_KEY, on ? '1' : '0');
+  } catch {
+    /* storage unavailable — the toggle still works for this panel's lifetime */
+  }
+}
+
+/**
+ * Subscribe to the toggle so the panel and the render-path auto trigger observe
+ * the same value. `storage` only fires in *other* documents, so writers must
+ * also notify locally — hence the in-page listener set.
+ */
+const autoListeners = new Set<(on: boolean) => void>();
+
+export function subscribeAuto(listener: (on: boolean) => void): () => void {
+  autoListeners.add(listener);
+  return () => {
+    autoListeners.delete(listener);
+  };
+}
+
+export function setAutoEnabled(on: boolean): void {
+  writeAutoEnabled(on);
+  for (const l of [...autoListeners]) {
+    try {
+      l(on);
+    } catch {
+      /* a broken listener must not stop the others */
+    }
+  }
 }
 
 /**

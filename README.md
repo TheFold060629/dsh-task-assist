@@ -6,7 +6,16 @@ DSH（DeepSeek Harness）任务辅助启动器插件。在对话框输入卡 **�
 
 - **发送键旁常驻按钮**：挂在官方 `conversation.input.right` 槽位（发送/停止键左侧的输入卡工具栏右侧）。
 - **自动扫描匹配**：读取输入框当前草稿作为「任务描述」，向后端 `api/task-assist/scan` 发起扫描，对已装技能做关键词打分排序。
-- **候选面板**：列出技能（可勾选，命中即默认勾选）与 MCP 工具（陈列），支持取消/确认。
+- **候选面板**：列出技能（可勾选）与 MCP 工具（陈列），支持取消/确认。
+- **搜索栏**：面板顶部可按名称或描述实时过滤技能列表，配「全选/全不选」对当前筛选结果批量操作。
+- **面板可用性**：面板用 `position: fixed` 脱离 composer 的层叠上下文（见下方说明），
+  头部与底部按钮吸附（列表再长也够得着 ✕ 和「启动辅助」），
+  点面板外任意处或按 `Esc` 都能关闭，再点一次「辅助」按钮也可收起。
+- **自动分析适配技能**：面板内的勾选项。勾选后——
+  - 打开面板时**默认勾中所有命中项**，不用自己一个个挑；
+  - 更关键的是，之后**每条消息发出时**都会自动扫描一次技能库，把命中的技能作为 steering 消息随该条消息注入，
+    完全不用再手动点「辅助」。开关状态存 `localStorage`（键 `dsh-task-assist:auto-analyze`），重启后仍记得；
+    按钮右上角出现小圆点表示已开启。
 - **一键注入执行**：确认后把勾选技能 `POST` 到 `api/task-assist/inject`，作为 steering 输入进入当前会话，Agent 下一步自动接手执行。
 
 ## 安装
@@ -42,8 +51,8 @@ pnpm build          # tsc 类型检查 + tsdown 产出 lib/index.js 与 lib/clie
 
 产物：
 
-- `lib/index.js` — host 端：路由 `api/task-assist/scan`、`api/task-assist/inject`、技能/MCP 枚举与打分。
-- `lib/client.js` — 浏览器端：`conversation.input.right` 槽位组件 + 候选面板。
+- `lib/index.js` — host 端：路由 `api/task-assist/scan`、`api/task-assist/inject`、`api/task-assist/auto`、`api/task-assist/diag`，技能/MCP 枚举与打分。
+- `lib/client.js` — 浏览器端：`conversation.input.right` 槽位组件 + 候选面板 + 发送后自动分析触发。
 
 ## 开发须知（踩过的坑）
 
@@ -85,21 +94,71 @@ pnpm build          # tsc 类型检查 + tsdown 产出 lib/index.js 与 lib/clie
 
 ## 工作原理
 
+手动路径：
+
 ```
 用户输入任务 → 点【辅助】→ client 读 useInput().draft
   → GET  api/task-assist/scan?task=..&session=..
   → host 扫描技能根目录(~/.agents/skills、~/.dsh/skills、项目 .dsh/.agents/skills)
      + 枚举已连 MCP server 工具，对 task 关键词打分排序
-  → 面板展示候选（命中默认勾选）
+  → 面板展示候选（可搜索过滤；勾了自动分析则命中项默认勾选）
   → 用户点【启动辅助】→ POST api/task-assist/inject {selected, session}
   → host 组装注入指令 → ctx.agents.get(sessionId).steer(message) 提交 steering 输入
   → 运行中的 Agent 在下一步拾取并按所选技能执行
 ```
 
+自动路径（勾选「根据文本内容自动分析适配技能」后）：
+
+```
+用户正常打字 → 按发送
+  → client 观察到 InputState 从「有草稿」跳到「草稿清空且 draftRev 前进」
+  → POST api/task-assist/auto {task: 刚发出的文本, session}
+  → host 自己跑一遍 scan，取 score >= 1 的全部命中项
+  → 命中则以同样的 steer(message) 通道注入；未命中则静默结束
+  → 整个过程不打断发送，失败也只是「这次没帮上」，不影响消息本身
+```
+
+**为什么自动路径不劫持发送键。** 插件侧没有「消息已发送」事件，也没有受支持的
+办法包住 composer 的提交处理器——发送键属于内核自己的 composer entry，
+替换它正是此前把桌面端整个拖死的那类改动（槽/组件契约违规会让 fiber FAILED，
+整个客户端 boot 拒绝挂载）。所以这里只**观察**内核已经发布的状态：
+`InputState` 的 `draft` 被清空、`draftRev` 前进，就是「刚发出去一条」。
+这是观测而非入侵：不可能弄坏发送路径；形状若哪天变了，最坏结果也只是自动分析不再触发。
+
+`draftRev` 同时用于去重——同一次发送会因各组件重渲染而被观察到多次，
+必须保证**一次发送只注入一次**。
+
 ## 说明
 
 - 扫描是**只读**的：只枚举技能元信息（name/description）与 MCP 工具名，不执行任何技能、不调用任何业务工具。
 - 注入是**提示级**指令（作为 steering 输入进入会话），不是直接代跑技能；是否真的加载/执行由 Agent 按上下文判断。
+- 自动分析的门槛是 `score >= 1`（至少一个任务关键词出现在技能名或描述里），且**只作用于自动路径**。
+  面板里的 `scan` 结果**不做这个过滤**——面板必须显示全部技能，否则搜索栏就没东西可搜，
+  用户也无法捞回打分器漏掉的技能。
+- **自动路径的空结果**（没命中 / 没会话 / 空任务）都是**成功**，不是错误：
+  一个匹配不上任何技能的任务是最常见情况，不该给用户弹错误。
+- **面板为什么用 `position: fixed`**：本插件的槽位在 composer 的 `trailing` 组里
+  （`.RlGAzG_trailing{flex:none;margin-left:auto}` ← `.RlGAzG_standardControls{display:flex}`
+  ← `.RlGAzG_card{position:relative;border-radius:…}`）。
+  用 `absolute` 会被定位到那张 card 里、并被限制在它的层叠上下文内 ——
+  ✕ 所在区域会被后绘制的 composer 元素盖住，点击落到上层元素而不是按钮上。
+  **这种情况加 `z-index` 是没用的**，因为面板一开始就在更低的层叠上下文里。
+  `position: fixed` 直接相对视口定位（composer 祖先链上没有 `transform`/`filter`，
+  不会劫持 fixed 的包含块），于是面板画在整个 composer 之上、自己收自己的点击；
+  坐标由按钮实测矩形算出，并夹进视口。
+- **面板尺寸与位置必须分开算**（"滚轮下滑时面板会变形"的根因）：
+  尺寸只由**视口**决定（`computePanelFixes()`，打开时算一次，此后仅在 `window.resize` 时重算），
+  位置才由**锚点 + 冻结尺寸**决定（`placePanelAt(anchor, width, height)`，滚动时 rAF 节流重算）。
+  之前把高度写成 `min(contentHeight, anchor.top - gap, …)` —— 而滚动对话时 composer 按钮
+  会一路往上走，于是面板高度跟着一路收缩（实测 `542 → 502 → 452 → 342 → 282`），
+  正是用户说的"下滑滚轮的时候页面会变化大小"。
+  **准则：浮层可以跟着自己的触发元素移动，但不可以跟着它改变尺寸。**
+  面板保持视口比例的 `maxHeight` + `overflow:auto`，长列表在稳定的框里滚动，而不是把框撑开。
+- **关闭方式为什么不做遮罩层**：全屏 scrim 会吃掉第一次点击 ——
+  而用户经常是点回输入框继续打字。用「外部 pointerdown + Escape」能达到同样的脱离效果，
+  又不抢占点击。
+- **`z-index` 取值注意**：产物里 `2147483000` 会被打包器折成指数写法 `2147483e3`，
+  写测试断言时按数值解析，别用十进制字符串匹配。
 - 注入经 `ctx.agents` 的 `steer()` 提交，消息 source 固定为 `plugin:dsh-task-assist`。
   V4 会话格式要求 **producer-owned** source kind —— 写成旧的 `{ kind: 'plugin', plugin: … }`
   会让**整轮对话被拒**，而不是只让注入失败。

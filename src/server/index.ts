@@ -7,6 +7,12 @@
  *     against the task text, return an ordered list for the client panel.
  *  2. Expose `api/task-assist/inject` — commit the user's selected skill names
  *     back to the host as an injection the Agent will load and execute.
+ *  3. Expose `api/task-assist/auto` — the "自动分析适配技能" path. Instead of
+ *     the user picking from the panel, the client announces "this text was just
+ *     sent" and the host scans + injects on its own. Kept as a separate route
+ *     from `/inject` because the two differ in *who decides*: `/inject` carries
+ *     a user-curated list and must honour it verbatim, `/auto` decides for
+ *     itself and must be free to inject nothing.
  *
  * Injection goes through the live Agent handle (`ctx.agents`), the same path the
  * official `session/prompt` command uses: `agent.steer(message)` submits input
@@ -44,7 +50,7 @@ const DIAG_LOG_MAX_BYTES = 512 * 1024;
  * identifies which artifact is live — a stale desktop process would otherwise
  * look exactly like a plugin that never mounted.
  */
-const HOST_BUILD = "2026-10-09T16:05+08:00";
+const HOST_BUILD = "2026-10-10T00:30+08:00";
 
 function logDiag(line: string): void {
   try {
@@ -400,6 +406,66 @@ export async function injectSelected(
   }
 }
 
+/**
+ * Auto mode's threshold, and *only* auto mode's.
+ *
+ * A human browsing the panel can see a zero-score row and judge it; an
+ * unattended injection cannot. `score > 0` means "at least one task keyword
+ * appears in this skill's name or description", which is the weakest signal
+ * that is still evidence rather than noise. Note this is deliberately NOT
+ * applied in `scan()`: the panel must keep showing everything so the search box
+ * has something to search, and so the user can rescue a skill the scorer missed.
+ */
+const AUTO_MIN_SCORE = 1;
+
+export interface AutoResult {
+  ok: boolean;
+  detail: string;
+  /** Names actually injected — empty when nothing cleared the threshold. */
+  injected: string[];
+  /** How many candidates were examined, for the client toast/log. */
+  scanned: number;
+}
+
+/**
+ * Scan `task` and inject whatever clears the auto threshold, without asking.
+ *
+ * Every early return is a *success* with `injected: []`, not a failure: a task
+ * that matches no skill is the common case and must not surface an error to the
+ * user. Only "the injection itself blew up" reports `ok: false`.
+ */
+export async function autoAssist(
+  ctx: Context,
+  sessionId: string | undefined,
+  task: string,
+): Promise<AutoResult> {
+  if (!task.trim()) return { ok: true, detail: '空任务，跳过自动分析', injected: [], scanned: 0 };
+
+  const target = sessionId ?? currentSessionId(ctx);
+  if (!target) return { ok: true, detail: '无法确定目标会话，跳过', injected: [], scanned: 0 };
+
+  let result: ScanResult;
+  try {
+    result = await scan({ cwd: resolveCwd(ctx, target), task, ctx });
+  } catch (e) {
+    return { ok: false, detail: `扫描失败: ${(e as Error)?.message ?? String(e)}`, injected: [], scanned: 0 };
+  }
+
+  const hits = result.skills.filter((s) => s.score >= AUTO_MIN_SCORE);
+  const scanned = result.skills.length;
+  if (hits.length === 0) {
+    return { ok: true, detail: `自动分析：${scanned} 个技能均未命中`, injected: [], scanned };
+  }
+
+  const resp = await injectSelected(ctx, target, hits);
+  return {
+    ok: resp.ok,
+    detail: resp.ok ? `自动分析命中 ${hits.length} 项：${resp.detail}` : resp.detail,
+    injected: hits.map((s) => s.name),
+    scanned,
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* Host entry + routes                                                */
 /* ------------------------------------------------------------------ */
@@ -601,7 +667,46 @@ export function apply(ctx: Context): void {
       `POST /${ROUTE_PREFIX}/inject`,
     );
 
-    logDiag("host:apply routes registered (diag, scan, inject)");
+    route(
+      {
+        kind: "prefix",
+        path: `/${ROUTE_PREFIX}/auto`,
+        handler: async (req: any, res: any) => {
+          if (!isTrustedRequest(req)) {
+            res.writeHead(403).end();
+            return;
+          }
+          try {
+            let body = "";
+            for await (const chunk of req) body += chunk;
+            let parsed: any = {};
+            try {
+              parsed = JSON.parse(body || "{}");
+            } catch {
+              parsed = {};
+            }
+            const task: string = typeof parsed?.task === "string" ? parsed.task : "";
+            const sid: string | undefined = typeof parsed?.session === "string" ? parsed.session : undefined;
+            const result = await autoAssist(ctx, sid, task);
+            // The auto path runs unattended, so the log is the only record of
+            // why a given message did or did not get help. Always write a line.
+            logDiag(
+              `auto session=${sid ?? "-"} scanned=${result.scanned} injected=${result.injected.length} ` +
+                `ok=${result.ok} detail=${result.detail}`,
+            );
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify(result));
+          } catch (e) {
+            logDiag(`auto-throw ${String((e as Error)?.stack ?? e)}`);
+            res.writeHead(500, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: (e as Error)?.message ?? String(e) }));
+          }
+        },
+      },
+      `POST /${ROUTE_PREFIX}/auto`,
+    );
+
+    logDiag("host:apply routes registered (diag, scan, inject, auto)");
   } catch (error) {
     console.error(
       '[dsh-task-assist] 宿主路由注册失败（面板会报请求错误，但不影响桌面端启动）:',

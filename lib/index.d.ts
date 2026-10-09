@@ -51,6 +51,22 @@ declare function injectSelected(ctx: Context, sessionId: string | undefined, sel
   ok: boolean;
   detail: string;
 }>;
+interface AutoResult {
+  ok: boolean;
+  detail: string;
+  /** Names actually injected — empty when nothing cleared the threshold. */
+  injected: string[];
+  /** How many candidates were examined, for the client toast/log. */
+  scanned: number;
+}
+/**
+ * Scan `task` and inject whatever clears the auto threshold, without asking.
+ *
+ * Every early return is a *success* with `injected: []`, not a failure: a task
+ * that matches no skill is the common case and must not surface an error to the
+ * user. Only "the injection itself blew up" reports `ok: false`.
+ */
+declare function autoAssist(ctx: Context, sessionId: string | undefined, task: string): Promise<AutoResult>;
 /** Cordis function-plugin name (official host halves export this). */
 declare const name = "dsh-task-assist";
 /**
@@ -66,4 +82,4 @@ declare const inject: string[];
 /** Register the plugin's host routes against a webserver-backed context. */
 declare function apply(ctx: Context): void;
 //#endregion
-export { McpToolCandidate, ROUTE_PREFIX, ScanResult, SkillCandidate, apply, buildInjectionText, discoverMcpTools, discoverSkills, inject, injectSelected, name, scan };
+export { AutoResult, McpToolCandidate, ROUTE_PREFIX, ScanResult, SkillCandidate, apply, autoAssist, buildInjectionText, discoverMcpTools, discoverSkills, inject, injectSelected, name, scan };
