@@ -19,3 +19,8 @@ coverage/
 # Publish-prep artifacts for the awesome-dsh-plugin submission (kept locally,
 # not part of the plugin source)
 _publish/
+
+# A profile-level pnpm-workspace.yaml can appear here when a build runs inside
+# the dsh profile; it carries machine-local `allowBuilds` placeholders and is
+# not part of this package. This project has no workspace of its own.
+pnpm-workspace.yaml
