@@ -1,0 +1,21 @@
+node_modules/
+
+# Build output is committed on purpose: the plugin ships prebuilt `lib/` so it
+# can be installed without running a build step (see package.json "files").
+# If you prefer a source-only repo, uncomment the next line and drop "files".
+# lib/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.log
+*.tsbuildinfo
+
+# Local scratch
+.tmp/
+dist/
+coverage/
+
+# Publish-prep artifacts for the awesome-dsh-plugin submission (kept locally,
+# not part of the plugin source)
+_publish/

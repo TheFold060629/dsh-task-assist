@@ -1,0 +1,20 @@
+# Keep the build artifacts byte-exact across platforms.
+#
+# `lib/*.js` is not ordinary source: it is a `__ModuleLoader__` factory wrapper
+# whose banner/footer brace shape is part of the DSH client-loader contract.
+# A checkout that rewrites its line endings produces a file that differs from
+# what was built and tested, so pin these to LF and mark them binary-ish.
+lib/*.js text eol=lf
+lib/*.d.ts text eol=lf
+
+# Source and docs: normalize to LF so a Windows contributor and a Linux CI
+# produce the same commit.
+*.ts   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.md   text eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.ico binary

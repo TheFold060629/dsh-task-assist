@@ -1,0 +1,9 @@
+# dsh-task-assist bundle patch
+#
+# Mounts the plugin row into the desktop profile's cordis loader. One install +
+# bargain reconcile (the `dsh plugin add` path or a manual append to
+# dsh.profile.bundles) is enough — this single `insert` is the only profile
+# change needed.
+- insert:
+    - id: dsh-task-assist
+      name: 'dsh-task-assist'
